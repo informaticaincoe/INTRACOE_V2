@@ -3,6 +3,20 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import status
 from .serializers import AuthResponseSerializer
+from django.http import JsonResponse
+from django.shortcuts import render, redirect
+from .models import Token_data
+from django.contrib.auth.models import User
+from django.contrib import messages
+from django.utils import timezone
+from datetime import timedelta
+
+
+#importaciones para actividad economica
+from django.urls import reverse_lazy
+from django.views.generic import ListView, DetailView
+from django.views.generic.edit import CreateView, UpdateView, DeleteView
+
 
 class AutenticacionAPIView(APIView):
     # Límite de intentos de autenticación permitidos
@@ -77,3 +91,57 @@ class AutenticacionAPIView(APIView):
                 "message": "Error de conexión con el servicio de autenticación",
                 "details": str(e),
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def autenticacion(request):
+
+    tokens_saves = Token_data.objects.all()
+
+    if request.method == "POST":
+        nit_empresa = request.POST.get("user")
+        pwd = request.POST.get("pwd")
+
+        auth_url = "https://api.dtes.mh.gob.sv/seguridad/auth"
+        headers = {"User-Agent": "MiAplicacionDjango/1.0"}
+        data = {"user": nit_empresa, "pwd": pwd}
+
+        try:
+            response = requests.post(auth_url, headers=headers, data=data)
+            if response.status_code == 200:
+                response_data = response.json()
+                if response_data.get("status") == "OK":
+                    token_body = response_data["body"]
+                    token = token_body.get("token")
+                    token_type = token_body.get("tokenType", "Bearer")
+                    roles = token_body.get("roles", [])
+
+                    # Guardar o actualizar los datos del token en la base de datos
+                    token_data, created = Token_data.objects.update_or_create(
+                        nit_empresa=nit_empresa,
+                        defaults={
+                            'password_hacienda': pwd,
+                            'token': token,
+                            'token_type': token_type,
+                            'roles': roles,
+                            'activado': True,
+                            'fecha_caducidad': timezone.now() + timedelta(days=1)  # Establecer caducidad para 24 horas después
+                        }
+                    )
+
+                    # Si el token es nuevo, enviamos un mensaje de éxito
+                    if created:
+                        messages.success(request, "Autenticación exitosa y token guardado.")
+                    else:
+                        messages.success(request, "Autenticación exitosa y token actualizado.")
+
+                    return redirect('autenticacion')
+                else:
+                    messages.error(request, "Error en la autenticación: " + response_data.get("message", "Error no especificado"))
+            else:
+                messages.error(request, "Error en la autenticación.")
+        except requests.exceptions.RequestException as e:
+            messages.error(request, "Error de conexión con el servicio de autenticación.")
+
+    return render(request, "autenticacion.html", {'tokens':tokens_saves})
+
+
